@@ -1,0 +1,16 @@
+[project]
+name = "article-credibility"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "feedparser>=6.0.12",
+    "kaggle>=1.7.4.5",
+    "lxml-html-clean>=0.4.5",
+    "newsapi-python>=0.2.7",
+    "newspaper3k>=0.2.8",
+    "pandas>=2.3.3",
+    "python-dotenv>=1.2.1",
+    "requests>=2.28.0",
+]
