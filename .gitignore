@@ -13,5 +13,6 @@ wheels/
 .env
 
 # Data files
-data/raw/
-data/processed/
+.csv
+.txt
+.json
