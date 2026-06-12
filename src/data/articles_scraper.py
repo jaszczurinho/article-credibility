@@ -102,7 +102,7 @@ def main():
     reliable_results = fetch_newsapi_dataset(
         api_key=api_key,
         domains=RELIABLE_DOMAINS,
-        label=1,
+        label=0,
         source_category="news_api",
         articles_per_query=ARTICLES_PER_QUERY
     )
@@ -117,7 +117,7 @@ def main():
     unreliable_results = fetch_newsapi_dataset(
         api_key=api_key,
         domains=UNRELIABLE_DOMAINS,
-        label=0,
+        label=1,
         source_category="news_api",
         articles_per_query=ARTICLES_PER_QUERY
     )
