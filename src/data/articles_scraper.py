@@ -36,6 +36,8 @@ def fetch_newsapi_dataset(api_key: str, domains: str, label: int, source_categor
     scraped_data = []
     newspaper_cfg = get_newspaper_config()
     
+    seen_urls = set() # Zbiór do śledzenia pobranych linków
+    
     for query in QUERIES:
         logger.info(f"--- [LABEL {label}] Wyszukiwanie dla query: '{query}' ---")
         
@@ -60,6 +62,12 @@ def fetch_newsapi_dataset(api_key: str, domains: str, label: int, source_categor
             
             if not url or "google.com" in url:
                 continue
+                
+            # Sprawdzanie czy URL już istnieje w zbiorze
+            if url in seen_urls:
+                continue 
+                
+            seen_urls.add(url) 
                 
             try:
                 article = Article(url, config=newspaper_cfg)
