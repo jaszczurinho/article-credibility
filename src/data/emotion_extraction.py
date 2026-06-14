@@ -1,14 +1,15 @@
+import math
 import nltk
 import numpy as np
 from scipy.stats import entropy
 from collections import Counter
-import pandas as pd
 from transformers import pipeline, AutoTokenizer
 import logging
 from functools import lru_cache
-from tqdm.auto import tqdm
 
 MODEL_NAME = "j-hartmann/emotion-english-distilroberta-base"
+
+EMOTION_CLASSES = ["anger", "disgust", "fear", "joy", "neutral", "sadness", "surprise"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,58 +22,65 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 logging.getLogger("transformers").setLevel(logging.WARNING)
 
-nltk.download("punkt", quiet=True)  # Do dzielenia tekstu na zdania
-
+nltk.download("punkt", quiet=True)
 
 @lru_cache(maxsize=1)
 def load_emotion_model():
-    logger.info("Ładuję model emocji: %s", MODEL_NAME)
+    logger.info("Ładuję model językowy: %s", MODEL_NAME)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     emotion_classifier = pipeline(
         "text-classification",
         model=MODEL_NAME,
         top_k=None,
     )
-    logger.info("Model emocji zaladowany")
+    logger.info("Model językowy załadowany")
     return tokenizer, emotion_classifier
 
 
-def split_long_sentence(tokenizer, sentence, max_content_tokens):
-    token_ids = tokenizer.encode(sentence, add_special_tokens=False)
+def split_long_sentence(tokenizer, token_ids, max_content_tokens):
+    """Split pre-computed token_ids into chunks to avoid double encoding."""
     for start in range(0, len(token_ids), max_content_tokens):
         yield tokenizer.decode(token_ids[start:start + max_content_tokens], skip_special_tokens=True)
 
 
-def calculate_article_entropy(text, max_tokens=512):
+def calculate_article_features(text, batch_size=16):
     tokenizer, emotion_classifier = load_emotion_model()
-    model_max_tokens = tokenizer.model_max_length - tokenizer.num_special_tokens_to_add(pair=False)
-    max_content_tokens = min(max_tokens, model_max_tokens)
+    max_content_tokens = tokenizer.model_max_length - tokenizer.num_special_tokens_to_add(pair=False)
 
-    text = "" if pd.isna(text) else str(text)
+    # Inicjalizacja domyślnego słownika wyników; na wypadek braku tekstu
+    results_dict = {
+        "emotion_entropy": 0.0,
+        "chunk_count": 0
+    }
+    for emotion in EMOTION_CLASSES:
+        results_dict[f"first_chunk_prob_{emotion}"] = 0.0
+
+    text = "" if (text is None or (isinstance(text, float) and math.isnan(text))) else str(text)
+    if not text.strip():
+        return results_dict
+
     sentences = nltk.sent_tokenize(text)
     chunks = []
     current_chunk = []
     current_token_count = 0
 
-    # Step 1: Maximize chunks based on max_tokens limit
     for sentence in sentences:
-        sentence_tokens = tokenizer.encode(sentence, add_special_tokens=False)
-        sentence_len = len(sentence_tokens)
+        token_ids = tokenizer.encode(sentence, add_special_tokens=False)
+        sentence_len = len(token_ids)
 
         if sentence_len > max_content_tokens:
             if current_chunk:
                 chunks.append(" ".join(current_chunk))
                 current_chunk = []
                 current_token_count = 0
-
-            chunks.extend(split_long_sentence(tokenizer, sentence, max_content_tokens))
+            chunks.extend(split_long_sentence(tokenizer, token_ids, max_content_tokens))
             continue
 
         if current_token_count + sentence_len > max_content_tokens:
             chunks.append(" ".join(current_chunk))
             current_chunk = []
             current_token_count = 0
-        
+
         current_chunk.append(sentence)
         current_token_count += sentence_len
 
@@ -80,43 +88,32 @@ def calculate_article_entropy(text, max_tokens=512):
         chunks.append(" ".join(current_chunk))
 
     if not chunks:
-        return 0
+        return results_dict
 
-    # Step 2: Classify emotions for each chunk
-    chunk_emotions = []
-    for chunk in chunks:
-        results = emotion_classifier(
-            chunk,
-            truncation=True,
-            max_length=tokenizer.model_max_length,
-        )[0]
-        # Get the label with the highest score
-        top_emotion = max(results, key=lambda x: x['score'])['label']
-        chunk_emotions.append(top_emotion)
+    # Batch all chunks in a single forward pass 
+    all_predictions = emotion_classifier(
+        chunks,
+        batch_size=batch_size,
+        truncation=True,
+        max_length=tokenizer.model_max_length,
+    )
 
-    # Step 3: Calculate entropy
-    counts = Counter(chunk_emotions)
-    
-    # Normalize by max possible entropy to keep it 0-1
-    num_emotions = 7  # j-hartmann model has 7 classes
-    max_entropy = np.log2(num_emotions)
-    
-    shannon_entropy = entropy(list(counts.values()), base=2)
-    normalized_entropy = shannon_entropy / max_entropy if max_entropy > 0 else 0
-    
-    return normalized_entropy
+    for pred in all_predictions[0]:
+        results_dict[f"first_chunk_prob_{pred['label']}"] = pred['score']
 
+    prob_matrix = np.zeros((len(chunks), len(EMOTION_CLASSES)))
+    emotion_index = {e: i for i, e in enumerate(EMOTION_CLASSES)}
 
-if __name__ == "__main__":
-    logger.info("Wczytywanie danych...")
-    data = pd.read_csv("data/processed/final_dataset_with_features.csv")[:500]
+    for chunk_idx, preds in enumerate(all_predictions):
+        for pred in preds:
+            col = emotion_index.get(pred['label'])
+            if col is not None:
+                prob_matrix[chunk_idx, col] = pred['score']
 
-    logger.info("Wyznaczanie emotion_entropy dla %s tekstów", len(data))
+    mean_probs = prob_matrix.mean(axis=0)
+    max_entropy = np.log2(len(EMOTION_CLASSES))
+    shannon_entropy = entropy(mean_probs, base=2)
+    results_dict["emotion_entropy"] = float(shannon_entropy / max_entropy) if max_entropy > 0 else 0.0
+    results_dict["chunk_count"] = len(chunks)
 
-    tqdm.pandas(desc="Liczenie emotion_entropy")
-    data["emotion_entropy"] = data["text"].progress_apply(calculate_article_entropy)
-
-    logger.info("Wyniki zapisane")
-
-    data.to_csv("data/processed/final_dataset_with_emotion_entropy.csv", index=False)
-
+    return results_dict
